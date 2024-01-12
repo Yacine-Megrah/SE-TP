@@ -13,3 +13,8 @@
 
 # Reference pics
 _pics/
+
+# bin files
+*.out
+*.o
+*.exe
