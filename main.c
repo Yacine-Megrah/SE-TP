@@ -52,7 +52,7 @@ typedef struct
 } mesg_buffer;
 #pragma endregion
 
-sem_t mutex1, mutex, nvide;
+sem_t mutex, nvide;
 int tampon_id;
 tamp_t *tampon;
 
@@ -91,7 +91,7 @@ ssize_t message_receive(message_t *msg, int src_pid)
 {
     mesg_buffer mesg_buf;
     ssize_t ret = msgrcv(msg_qids[src_pid], &mesg_buf, sizeof(message_t), (long)(src_pid + 100), 0);
-    memcpy(msg, &mesg_buf.body, sizeof(message_t));
+    if(ret)memcpy(msg, &mesg_buf.body, sizeof(message_t));
     return ret;
 }
 
@@ -104,33 +104,39 @@ int message_send(message_t *msg, int src_pid)
     return 0;
 }
 
-void req_receive(req_t *request)
-{
-    sem_wait(&mutex);
-        sem_wait(&mutex1);
-            memcpy(request, &tampon->T[0], sizeof(req_t));
-            for (int _ = 0; _ < tampon->cpt; _++)
-                memcpy(&tampon->T[_], &tampon->T[_ + 1], sizeof(req_t));
-            tampon->cpt--;
-        sem_post(&mutex1);
-    sem_post(&mutex);
-    sem_post(&nvide);
-}
-
+// append
 void req_send(req_t *request)
 {
     sem_wait(&nvide);
         sem_wait(&mutex);
-            sem_wait(&mutex1);
-                memcpy(&tampon->T[tampon->cpt], request, sizeof(req_t));
-                tampon->cpt++;
-            sem_post(&mutex1);
+            //memcpy(&tampon->T[tampon->cpt], request, sizeof(req_t));
+            tampon->cpt++;
+            printf("\t cpt = %d .\n", tampon->cpt);
         sem_post(&mutex);
+}
+
+// pull
+bool req_receive(req_t *request)
+{
+    sem_wait(&mutex);
+    if(tampon->cpt > 0){
+        //memcpy(request, &tampon->T[0], sizeof(req_t));
+        //for (int _ = 0; _ < tampon->cpt-1; _++)
+        //    memcpy(&tampon->T[_], &tampon->T[_ + 1], sizeof(req_t));
+        tampon->cpt--;
+        sem_post(&nvide);
+        printf("\t cpt = %d .\n", tampon->cpt);
+        sem_post(&mutex);
+        return true;
+    }else{
+        sem_post(&mutex);
+        return false;
+    }
+    
 }
 
 void Calcul(int pid)
 {
-#pragma region INIT
     // find message queue.
     if (msg_qids[pid] != msgget((key_t)(60 + pid), 0666))
     {
@@ -150,49 +156,48 @@ void Calcul(int pid)
         printf("\tERR: attaching shared mem block failed for Calcul %d.\n", pid);
         return;
     }
+
     // Instruction file
     char filename[25];
-    sprintf(filename, "./instructions/Set%d.ins", pid);
+    sprintf(filename, "Set%d.ins", pid);
     FILE *f = fopen(filename, "r");
     if (!f)
     {
         printf("\tERR: Couldn't find instruction file %d.\n", pid);
     }
-#pragma endregion
 
     req_t request = {.pid = pid, .type = 1, .s1 = 0, .s2 = 0, .s3 = 0};
     message_t message = {.type = false , .text = "\0"};
-    
-    printf("reading %s\n", filename);
+
     bool running = true;
     while(running){
-        printf(".");
-        if(fscanf(f, "%d %d %d %d\n", &request.type, &request.s1, &request.s2, &request.s3) == EOF)
-            running = false;
-        printf("__[Calcul %d]::(%d, %d, %d, %d)__", request.pid,  &request.type, &request.s1, &request.s2, &request.s3);
+        fscanf(f, "%d %d %d %d", &request.type, &request.s1, &request.s2, &request.s3);
+        printf("__[Calcul %d]::(%d, %d, %d, %d)__\n", request.pid,  request.type, request.s1, request.s2, request.s3);
         switch(request.type){
             case 1:
-                sleep(0.1);
+                sleep(0.1f);
                 break;
             case 2:
                 req_send(&request);
                 // src_pid 0 = Gerant
-            //    while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
+                //while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
                 // reset
                 strcpy(message.text,"\0"); message.type = false;
                 break;
             case 3:
                 sprintf(message.text, msg_lib_format, request.s1, request.s2, request.s3);
                 message_send(&message, pid); 
-            //    while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
+                //while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
                 // reset
                 strcpy(message.text,"\0"); message.type = false;
                 break;
             case 4:
                 req_send(&request);
                 running = false;
+                break;
             default: break;
         }
+        sleep(0.5f);
     }
 
     shmdt(tampon);
@@ -201,7 +206,6 @@ void Calcul(int pid)
 
 void Gerant()
 {
-#pragma region INIT
     // find message queue.
     if (msg_qids[0] != msgget((key_t)(60), 0666))
     {
@@ -229,35 +233,19 @@ void Gerant()
     alloc_t Alloc[NUM_PROC] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
     procInf_t Stat[NUM_PROC] = {{false, 0}, {false, 0}, {false, 0}, {false, 0}, {false, 0}};
 
-#pragma endregion
-
-    print_status(Dispo, Dem, Stat, Alloc);
-
     bool found;
     while (NbProc)
     {
-        found = false;
-        do{
-            sem_wait(&mutex1);
-            if (tampon->cpt)
-            {
-                sem_post(&mutex1);
-                found = true;
-                req_receive(&request);
-                printf("\trequest %d received from %d.\n", request.type, request.pid);
-                if(request.type == 4)NbProc--;
-                // reset
-                request.pid = 0; request.type = 1; request.s1 = 0; request.s2 = 0; request.s3 = 0;
-            }
-            else{
-                sem_post(&mutex1);
-            }
-        }while(!found);
+        req_receive(&request);
+        printf("[_PID: %d, request: %d_]\n", request.pid, request.type);
+        if(request.type == 4)NbProc--;
+        // reset
+        request.pid = 0; request.type = 1; request.s1 = 0; request.s2 = 0; request.s3 = 0;
         
         for (int _ = 1; _ <= NUM_PROC; _++)
         {
             if (msgrcv(msg_qids[_], &msg, sizeof(message_t), (long)(100 + _), 0))
-                printf("\t\tGreeted by C%d. message \'%s\'\n", _, msg.body.text);
+                printf("\tPID %d: message \'%s\'\n", _, msg.body.text);
         }
     }
 
@@ -268,9 +256,10 @@ void Gerant()
 int prog_init()
 {
     // semaphores
-    sem_init(&mutex1, 1, 1);
-    sem_init(&mutex, 1, 1);
-    sem_init(&nvide, 1, TAMP_SIZE);
+    if(sem_init(&mutex, 0, 1) || sem_init(&nvide, 0, TAMP_SIZE)){
+        printf("sem_init(), %s\n", strerror(errno));
+        return 1;
+    }
 
     // message queues
     printf("creating message queues:\n");
@@ -293,7 +282,6 @@ int prog_destroy()
 {
     sem_destroy(&nvide);
     sem_destroy(&mutex);
-    sem_destroy(&mutex1);
 
     printf("destroying message queues:\n");
     for (int _ = 0; _ <= NUM_PROC; _++)
@@ -306,17 +294,31 @@ int prog_destroy()
     return 0;
 }
 
-int main()
-{
+int main(int argc, char *argv[])
+{   
     if (prog_init())
         printf("prog_init();\n");
+    
+    tampon = (tamp_t *)shmat(tampon_id, NULL, 0);
+    if (!tampon)
+    {
+        printf("\tERR: attaching shared mem block failed for main.\n");
+        return EXIT_FAILURE;
+    }
+    tampon->cpt = 0;
+
+    if (argc == 2 && !strcmp(argv[1], "clean")){
+        if (prog_destroy())
+        printf("prog_destroy();\n");
+        return 0;
+    }
 
     if (fork() == 0)
     {
         Gerant();
         exit(0);
     }
-
+    sleep(1);
     for (int i = 1; i <= NUM_PROC; i++)
     {
         if (fork() == 0)
