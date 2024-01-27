@@ -1,6 +1,6 @@
 CC=gcc
 OBJETCS= main.o
-BIN= prog
+BIN= prog.out
 
 all: run
 
