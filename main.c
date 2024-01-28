@@ -17,6 +17,15 @@
 #define TAMP_KEY 16
 #define MSG_STR_SIZE 30
 
+#pragma region RETURNS
+// demand is too big, waiting for more resources to be available...
+#define ALC_2BIG '2bg'
+// allocated successfully.
+#define ALC_SUCCESS 'alc'
+// empty wait queue.
+#define ALC_NOBLQ 'empty'
+#pragma endregion
+
 #define SEM_MUTEX_FNAME "/sem_mutex"
 #define SEM_NVIDE_FNAME "/sem_nvide"
 
@@ -56,8 +65,24 @@ tamp_t* tampon;
 
 int msg_qids[NUM_PROC+1];
 const char msg_lib_format[] = "liber(%d, %d, %d)";
+const char msg_aloc_success[] = "resource allocated.";
+const char msg_aloc_fail[] = "failed to allocate.";
 const char msg_lib_success[] = "resource liberated.";
 const char msg_lib_fail[] = "failed to liberate.";
+
+void arth_sub(int *dispo, int *demand, int* aloc){
+    if(*dispo >= *demand){
+        *dispo -= *demand;
+        *aloc += *demand;
+        *demand = 0;
+    }else{
+        int rest = *demand - *dispo;
+        *demand -= rest;
+        *dispo -= *demand;
+        *aloc += *demand;
+        *demand = rest;
+    }
+}
 
 void status(int Dispo[], req_t Dem[], procInf_t Stat[], alloc_t Alloc[]) {
     int p;
@@ -79,6 +104,23 @@ void status(int Dispo[], req_t Dem[], procInf_t Stat[], alloc_t Alloc[]) {
         printf("| %8d | %8d | %8d | %8d |\n", p + 1, Alloc[p].s1, Alloc[p].s2, Alloc[p].s3);
     }
     printf("-----------------------------------------------\n");
+}
+
+int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat, int pid){
+    // find the most desering process
+    int target = 0;
+    int max_wait = -1;
+    for(int p=0; p<NUM_PROC ; p++){
+        if(Stat[p].bloq && Stat[p].tmpAtt>max_wait){
+            max_wait = Stat[p].tmpAtt;
+            target = p;
+        }
+        if(target == 0)
+            return ALC_NOBLQ;
+    }
+    bool satisfied = false;
+    // provide resources from Dispo
+    
 }
 
 int message_send(message_t* msg, int src_pid) {
@@ -164,7 +206,7 @@ void Calcul(int pid) {
             case 2:
                 req_send(&request);
                 // src_pid 0 = Gerant
-                // while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
+                while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_aloc_success)){};
                 // reset
                 strcpy(message.text, "\0");
                 message.type = false;
@@ -172,7 +214,7 @@ void Calcul(int pid) {
             case 3:
                 sprintf(message.text, msg_lib_format, request.s1, request.s2, request.s3);
                 message_send(&message, pid);
-                // while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success));
+                while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success)){};
                 //  reset
                 strcpy(message.text, "\0");
                 message.type = false;
@@ -230,8 +272,17 @@ void Gerant() {
     while (NbProc) {
         if (req_receive(&request)) {
             printf("[_PID: %d, request: %d_]\n", request.pid, request.type);
-            if (request.type == 4)
-                NbProc--;
+            switch(request.type){
+                case 2:
+                    Dem[request.pid-1] = request;
+                    Stat[request.pid-1].bloq = true;
+                    break;
+                case 4:
+                    NbProc--;
+                    break;
+                default:
+                    break;
+            }
             // reset
             request.pid = 0;
             request.type = 1;
@@ -239,6 +290,7 @@ void Gerant() {
             request.s2 = 0;
             request.s3 = 0;
         }
+
         for(int p=1; p <= NUM_PROC; p++){
             msgrcv(msg_qids[p], &msg_buf, sizeof(msg_buf.body), p+100, IPC_NOWAIT);
             if(strlen(msg_buf.body.text)){
@@ -248,6 +300,8 @@ void Gerant() {
                 msg_buf.body.type = false;
             }
         }
+
+        while(satisfy(Dispo, Dem, Alloc, Stat, -1) == ALC_SUCCESS){}
     }
     shmdt(tampon);
 }
