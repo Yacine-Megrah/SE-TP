@@ -50,7 +50,7 @@ typedef struct {
 } mesg_buffer;
 #pragma endregion
 
-sem_t* mutex, * nvide;
+sem_t *mutex, *nvide;
 int tampon_id;
 tamp_t* tampon;
 
