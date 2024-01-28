@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <semaphore.h>
 #include <unistd.h>
@@ -19,11 +20,13 @@
 
 #pragma region RETURNS
 // demand is too big, waiting for more resources to be available...
-#define ALC_2BIG '2bg'
+#define ALC_2BIG 1
 // allocated successfully.
-#define ALC_SUCCESS 'alc'
+#define ALC_SUCCESS 0
 // empty wait queue.
-#define ALC_NOBLQ 'empty'
+#define ALC_NOBLQ -1
+// no donors to provide resources.
+#define ALC_NODNR -2
 #pragma endregion
 
 #define SEM_MUTEX_FNAME "/sem_mutex"
@@ -70,7 +73,7 @@ const char msg_aloc_fail[] = "failed to allocate.";
 const char msg_lib_success[] = "resource liberated.";
 const char msg_lib_fail[] = "failed to liberate.";
 
-void arth_sub(int *dispo, int *demand, int* aloc){
+void dispo_sub(int *dispo, int *demand, int* aloc){
     if(*dispo >= *demand){
         *dispo -= *demand;
         *aloc += *demand;
@@ -82,6 +85,14 @@ void arth_sub(int *dispo, int *demand, int* aloc){
         *aloc += *demand;
         *demand = rest;
     }
+}
+
+bool is_in(int *T, int a, int size){
+    for(int i = 0; i<size ; i++){
+        if(T[i]==a)
+            return true;
+    }
+    return false;
 }
 
 void status(int Dispo[], req_t Dem[], procInf_t Stat[], alloc_t Alloc[]) {
@@ -106,29 +117,90 @@ void status(int Dispo[], req_t Dem[], procInf_t Stat[], alloc_t Alloc[]) {
     printf("-----------------------------------------------\n");
 }
 
-int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat, int pid){
+int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat){
     // find the most desering process
-    int target = 0;
-    int max_wait = -1;
+    int target = -1, max_wait = -1;
     for(int p=0; p<NUM_PROC ; p++){
         if(Stat[p].bloq && Stat[p].tmpAtt>max_wait){
             max_wait = Stat[p].tmpAtt;
             target = p;
         }
-        if(target == 0)
-            return ALC_NOBLQ;
     }
+    if(target == -1)
+        return ALC_NOBLQ;
+
     bool satisfied = false;
     // provide resources from Dispo
-    
-}
+    dispo_sub(&Dispo[0], &Dem[target].s1, &Alloc[target].s1);
+    dispo_sub(&Dispo[1], &Dem[target].s2, &Alloc[target].s2);
+    dispo_sub(&Dispo[2], &Dem[target].s3, &Alloc[target].s3);
+    if(Dem[target].s1 == 0 && Dem[target].s2 == 0 && Dem[target].s3 == 0){
+        satisfied = true;
+        // send message to liberate
+        mesg_buffer msg = {.type = (long)(100+target), .body = {.type = true}};
+        strcpy(msg.body.text, msg_aloc_success);
+        msgsnd(msg_qids[0], &msg, sizeof(msg.body), 0);
+        // reset
+        Stat[target].bloq = false;
+        Stat[target].tmpAtt = 0;
 
-int message_send(message_t* msg, int src_pid) {
-    mesg_buffer msg_buf;
-    memcpy(&msg_buf.body, msg, sizeof(message_t));
-    msg_buf.type = (long)(src_pid + 100);
-    msgsnd(msg_qids[src_pid], &msg_buf, sizeof(message_t), 0);
-    return 0;
+        return ALC_SUCCESS;
+    }
+
+    // provide resources from other processes, starting from the newest in queue
+    // check for potential donors
+    int d_count=0;
+    for(int d=0; d<NUM_PROC ; d++){
+        if(d != target && Stat[d].bloq)
+            d_count++;
+    }
+    if(d_count==0)
+        return ALC_NODNR;
+    int dsize = d_count; //**dont remove.**
+    int *donors = malloc(sizeof(int)*dsize);
+
+    // find a source
+    int source = -1, min_wait = INT_MAX;
+    while(d_count && !satisfied){
+        for(int p = 0; p<NUM_PROC ; p++){
+            if(p != target && Stat[p].bloq && Stat[p].tmpAtt < min_wait 
+                    && !is_in(donors, p, dsize)){
+                source = p;
+                min_wait = Stat[p].tmpAtt;
+            }
+        }
+        if(source == -1)
+            return ALC_NODNR;
+        int before = Alloc[target].s1;
+        dispo_sub(&Alloc[source].s1, &Dem[target].s1, &Alloc[target].s1);
+        Dem[source].s1 += Alloc[target].s1 - before;
+
+        before = Alloc[target].s2;
+        dispo_sub(&Alloc[source].s2, &Dem[target].s2, &Alloc[target].s2);
+        Dem[source].s2 += Alloc[target].s2 - before;
+
+        before = Alloc[target].s3;
+        dispo_sub(&Alloc[source].s3, &Dem[target].s3, &Alloc[target].s3);
+        Dem[source].s3 += Alloc[target].s3 - before;
+
+        if(Dem[target].s1 == 0 && Dem[target].s2 == 0 && Dem[target].s3 == 0){
+            satisfied = true;
+            // send message to liberate
+            mesg_buffer msg = {.type = (long)(100+target), .body = {.type = true}};
+            strcpy(msg.body.text, msg_aloc_success);
+            msgsnd(msg_qids[0], &msg, sizeof(msg.body), 0);
+            // reset
+            Stat[target].bloq = false;
+            Stat[target].tmpAtt = 0;
+
+            return ALC_SUCCESS;
+        }
+        d_count--;
+        donors[d_count] = source;
+    };
+
+    free(donors);
+    return ALC_2BIG;
 }
 
 // append
@@ -192,7 +264,7 @@ void Calcul(int pid) {
     }
 
     req_t request = { .pid = pid, .type = 1, .s1 = 0, .s2 = 0, .s3 = 0 };
-    message_t message = { .type = false, .text = "\0" };
+    mesg_buffer message = {.type = (long)(100+pid), .body = {.type = false, .text = "\0"} };
 #pragma endregion
 
     bool running = true;
@@ -200,24 +272,21 @@ void Calcul(int pid) {
         fscanf(f, "%d %d %d %d", &request.type, &request.s1, &request.s2, &request.s3);
         // printf("__[Calcul %d]::(%d, %d, %d, %d)__\n", request.pid, request.type, request.s1, request.s2, request.s3);
         switch (request.type) {
-            case 1:
-                sleep(0.1f);
-                break;
             case 2:
                 req_send(&request);
                 // src_pid 0 = Gerant
-                while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_aloc_success)){};
+                while(msgrcv(msg_qids[0], &message, sizeof(message.body), (long)(100+pid), IPC_NOWAIT) <= 0 || message.body.type == false || strcmp(message.body.text, msg_aloc_success)){};
                 // reset
-                strcpy(message.text, "\0");
-                message.type = false;
+                message.body.text[0] = '\0';
+                message.body.type = false;
                 break;
             case 3:
-                sprintf(message.text, msg_lib_format, request.s1, request.s2, request.s3);
-                message_send(&message, pid);
-                while(message_receive(&message, 0) <= 0 || message.type == false || strcmp(message.text, msg_lib_success)){};
+                sprintf(message.body.text, msg_lib_format, request.s1, request.s2, request.s3);
+                msgsnd(msg_qids[pid], &message, sizeof(message.body), 0);
+                while(msgrcv(msg_qids[0], &message, sizeof(message.body), (long)(100+pid), IPC_NOWAIT) <= 0 || message.body.type == false || strcmp(message.body.text, msg_lib_success)){};
                 //  reset
-                strcpy(message.text, "\0");
-                message.type = false;
+                message.body.text[0] = '\0';
+                message.body.type = false;
                 break;
             case 4:
                 req_send(&request);
@@ -301,7 +370,12 @@ void Gerant() {
             }
         }
 
-        while(satisfy(Dispo, Dem, Alloc, Stat, -1) == ALC_SUCCESS){}
+        while(satisfy(Dispo, Dem, Alloc, Stat) == ALC_SUCCESS){}
+        // count wait time
+        for(int p=1; p <= NUM_PROC; p++){
+            if(Stat[p].bloq)
+                Stat[p].tmpAtt++;
+        }
     }
     shmdt(tampon);
 }
@@ -346,7 +420,7 @@ int prog_destroy() {
     printf("destroying message queues:\n");
     for (int _ = 0; _ <= NUM_PROC; _++) {
         msgctl(msg_qids[_], IPC_RMID, NULL);
-        printf("\tmsg_qid %d destroyed.\n", _, msg_qids[_]);
+        printf("\t%d. msg_qid %d destroyed.\n", _, msg_qids[_]);
     }
 
     shmctl(tampon_id, IPC_RMID, NULL);
