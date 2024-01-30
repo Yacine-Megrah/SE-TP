@@ -95,7 +95,7 @@ bool is_in(int *T, int a, int size){
     return false;
 }
 
-void status(int Dispo[], req_t Dem[], procInf_t Stat[], alloc_t Alloc[]) {
+void status(int *Dispo, req_t *Dem, procInf_t *Stat, alloc_t *Alloc) {
     int p;
     printf("  Dispo:\n");
     printf("| %8d | %8d | %8d |\n", Dispo[0], Dispo[1], Dispo[2]);
@@ -348,6 +348,8 @@ void Gerant() {
     procInf_t Stat[NUM_PROC] = { {false, 0}, {false, 0}, {false, 0}, {false, 0}, {false, 0} };
 #pragma endregion
 
+    status(Dispo, Dem, Stat, Alloc);
+
     while (NbProc) {
         if (req_receive(&request)) {
             printf("[_PID: %d, request: %d_]\n", request.pid, request.type);
@@ -360,6 +362,7 @@ void Gerant() {
                     Dispo[0] += Alloc[request.pid-1].s1; Alloc[request.pid-1].s1 = 0;
                     Dispo[1] += Alloc[request.pid-1].s2; Alloc[request.pid-1].s2 = 0;
                     Dispo[2] += Alloc[request.pid-1].s3; Alloc[request.pid-1].s3 = 0;
+                    status(Dispo,Dem,Stat,Alloc);
                     NbProc--;
                     break;
                 default:
