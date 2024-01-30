@@ -154,14 +154,15 @@ int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat){
         if(d != target && Stat[d].bloq)
             d_count++;
     }
-    if(d_count==0)
+    if(d_count<=1)
         return ALC_NODNR;
     int dsize = d_count; //**dont remove.**
     int *donors = malloc(sizeof(int)*dsize);
 
+    int source, min_wait;
     // find a source
-    int source = -1, min_wait = INT_MAX;
     while(d_count && !satisfied){
+        source = -1; min_wait = INT_MAX;
         for(int p = 0; p<NUM_PROC ; p++){
             if(p != target && Stat[p].bloq && Stat[p].tmpAtt < min_wait 
                     && !is_in(donors, p, dsize)){
@@ -169,8 +170,11 @@ int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat){
                 min_wait = Stat[p].tmpAtt;
             }
         }
-        if(source == -1)
+        if(source == -1){
+            free(donors);
             return ALC_NODNR;
+        }
+
         int before = Alloc[target].s1;
         dispo_sub(&Alloc[source].s1, &Dem[target].s1, &Alloc[target].s1);
         Dem[source].s1 += Alloc[target].s1 - before;
@@ -193,6 +197,7 @@ int satisfy(int* Dispo, req_t* Dem, alloc_t* Alloc, procInf_t* Stat){
             Stat[target].bloq = false;
             Stat[target].tmpAtt = 0;
 
+            free(donors);
             return ALC_SUCCESS;
         }
         d_count--;
@@ -241,6 +246,10 @@ void Calcul(int pid) {
     // find message queue.
     if (msg_qids[pid] != msgget((key_t)(60 + pid), 0666)) {
         printf("\tERR: missing message queue for Calcul %d\n", pid);
+        return;
+    }
+    if (msg_qids[0] != msgget((key_t)(60 + 0), 0666)) {
+        printf("\tERR: missing message queue Freponse\n");
         return;
     }
     // find shared mem block
@@ -312,12 +321,13 @@ void Gerant() {
         return;
     }
     // find message queue.
-    for (int p = 0; p < NUM_PROC; p++) {
+    for (int p = 0; p <= NUM_PROC; p++) {
         if (msg_qids[p] != msgget((key_t)(60 + p), 0666)) {
             printf("\tERR: missing message queue for Gerant\n");
             return;
         }
     }
+    
     // find & attach shared mem block
     if (tampon_id != shmget((key_t)TAMP_KEY, sizeof(tamp_t), 0666)) {
         printf("\tERR: Couldn't find shared mem block for Gerant.\n");
@@ -347,6 +357,9 @@ void Gerant() {
                     Stat[request.pid-1].bloq = true;
                     break;
                 case 4:
+                    Dispo[0] += Alloc[request.pid-1].s1; Alloc[request.pid-1].s1 = 0;
+                    Dispo[1] += Alloc[request.pid-1].s2; Alloc[request.pid-1].s2 = 0;
+                    Dispo[2] += Alloc[request.pid-1].s3; Alloc[request.pid-1].s3 = 0;
                     NbProc--;
                     break;
                 default:
@@ -364,6 +377,16 @@ void Gerant() {
             msgrcv(msg_qids[p], &msg_buf, sizeof(msg_buf.body), p+100, IPC_NOWAIT);
             if(strlen(msg_buf.body.text)){
                 printf("Gerant(): message from P0%d, %s\n", p, msg_buf.body.text);
+                //TODO liberation of resources.
+
+                if(!strncmp(msg_lib_format, msg_buf.body.text, 5)){
+                    int lib1, lib2, lib3;
+                    sscanf(msg_buf.body.text, msg_lib_format, &lib1, &lib2, &lib3);
+                    dispo_sub(&Alloc[p].s1, &lib1, &Dispo[0]);
+                    dispo_sub(&Alloc[p].s2, &lib2, &Dispo[1]);
+                    dispo_sub(&Alloc[p].s3, &lib3, &Dispo[2]);
+                }
+                
                 //reset
                 msg_buf.body.text[0] = '\0';
                 msg_buf.body.type = false;
